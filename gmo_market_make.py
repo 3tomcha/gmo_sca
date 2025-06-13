@@ -1,0 +1,76 @@
+import asyncio
+import websockets
+import json
+import time
+from gmo_order import send_post_only_limit_order, cancel_all_positions
+
+latest_bid = None
+latest_ask = None
+current_buy_order_id = None
+current_sell_order_id = None
+
+last_buy_price = None
+last_sell_price = None
+last_order_time = 0
+ORDER_INTERVAL = 10  # 秒単位で待機時間
+
+async def order_loop():
+    global current_buy_order_id, current_sell_order_id
+    global last_buy_price, last_sell_price, last_order_time
+
+    while True:
+        if latest_bid is None or latest_ask is None:
+            await asyncio.sleep(0.1)
+            continue
+
+        maker_buy_price = round(latest_bid + 0.001, 3)   # 買い板よりちょっとだけ高く買う
+        maker_sell_price = round(latest_ask - 0.001, 3)  # 売り板よりちょっとだけ安く売る
+
+        now = time.time()
+        price_changed = (
+            maker_buy_price != last_buy_price or
+            maker_sell_price != last_sell_price
+        )
+        enough_time_passed = (now - last_order_time) >= ORDER_INTERVAL
+
+        if price_changed and enough_time_passed:
+            print(f"📡 再発注 → Buy: {maker_buy_price}, Sell: {maker_sell_price}")
+
+            cancel_all_positions("DOGE")  # 過去の注文を全キャンセル
+            current_buy_order_id = send_post_only_limit_order("DOGE", "BUY", 10, maker_buy_price)
+            current_sell_order_id = send_post_only_limit_order("DOGE", "SELL", 10, maker_sell_price)
+
+            last_buy_price = maker_buy_price
+            last_sell_price = maker_sell_price
+            last_order_time = now
+        else:
+            await asyncio.sleep(0.5)  # 応答性を維持しつつCPUを休ませる
+
+async def listen_to_orderbook():
+    global latest_bid, latest_ask
+    uri = "wss://api.coin.z.com/ws/public/v1"
+    async with websockets.connect(uri) as websocket:
+        subscribe_msg = {
+            "command": "subscribe",
+            "channel": "orderbooks",
+            "symbol": "DOGE"
+        }
+        await websocket.send(json.dumps(subscribe_msg))
+        print("✅ Subscribed to DOGE orderbooks")
+
+        while True:
+            response = await websocket.recv()
+            data = json.loads(response)
+            # print(data)
+
+            if "bids" in data and "asks" in data:
+                latest_bid = float(data["bids"][0]["price"])
+                latest_ask = float(data["asks"][0]["price"])
+
+async def main():
+    await asyncio.gather(
+        listen_to_orderbook(),
+        order_loop()
+    )
+
+asyncio.run(main())
