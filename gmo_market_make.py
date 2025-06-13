@@ -13,7 +13,7 @@ last_buy_price = None
 last_sell_price = None
 last_order_time = 0
 
-ORDER_INTERVAL = 3  # 最小発注間隔（秒）
+ORDER_INTERVAL = 1  # 最小発注間隔（秒）
 SPREAD_THRESHOLD = 0.002  # 最小スプレッド（＝0.2%）
 MAX_RETRIES = 5  # 最大再接続回数
 RETRY_DELAY = 5  # 再接続待機時間（秒）
@@ -46,14 +46,21 @@ async def order_loop():
         )
         enough_time_passed = (now - last_order_time) >= ORDER_INTERVAL
 
-        if price_changed and enough_time_passed:
-            print(f"✅ 発注 → Spread: {spread_pct:.4%}, Buy: {maker_buy_price}, Sell: {maker_sell_price}")
+         # 売りはスプレッド関係なく出す、買いだけ判定する
+        should_buy = spread_pct >= SPREAD_THRESHOLD
+        should_send = price_changed and enough_time_passed
 
+        if should_send:
+            print(f"✅ 発注判定 → Buy条件: {should_buy}, Spread: {spread_pct:.4%}, Buy: {maker_buy_price}, Sell: {maker_sell_price}")
             cancel_all_positions("DOGE")
-            current_buy_order_id = send_post_only_limit_order("DOGE", "BUY", 10, maker_buy_price)
-            current_sell_order_id = send_post_only_limit_order("DOGE", "SELL", 10, maker_sell_price)
 
-            last_buy_price = maker_buy_price
+            if should_buy:
+                current_buy_order_id = send_post_only_limit_order("DOGE", "BUY", 10, maker_buy_price)
+                last_buy_price = maker_buy_price
+            else:
+                print(f"❌ 買いスキップ → スプレッドが狭い: {spread_pct:.4%} < {SPREAD_THRESHOLD*100:.1f}%")
+
+            current_sell_order_id = send_post_only_limit_order("DOGE", "SELL", 10, maker_sell_price)
             last_sell_price = maker_sell_price
             last_order_time = now
         else:
