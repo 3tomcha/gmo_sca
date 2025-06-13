@@ -15,6 +15,8 @@ last_order_time = 0
 
 ORDER_INTERVAL = 3  # 最小発注間隔（秒）
 SPREAD_THRESHOLD = 0.002  # 最小スプレッド（＝0.2%）
+MAX_RETRIES = 5  # 最大再接続回数
+RETRY_DELAY = 5  # 再接続待機時間（秒）
 
 async def order_loop():
     global current_buy_order_id, current_sell_order_id
@@ -60,22 +62,49 @@ async def order_loop():
 async def listen_to_orderbook():
     global latest_bid, latest_ask
     uri = "wss://api.coin.z.com/ws/public/v1"
-    async with websockets.connect(uri) as websocket:
-        subscribe_msg = {
-            "command": "subscribe",
-            "channel": "orderbooks",
-            "symbol": "DOGE"
-        }
-        await websocket.send(json.dumps(subscribe_msg))
-        print("✅ Subscribed to DOGE orderbooks")
+    retry_count = 0
 
-        while True:
-            response = await websocket.recv()
-            data = json.loads(response)
+    while retry_count < MAX_RETRIES:
+        try:
+            async with websockets.connect(
+                uri,
+                ping_interval=20,  # 20秒ごとにping
+                ping_timeout=10,   # pingのタイムアウトは10秒
+                close_timeout=10   # クローズのタイムアウトは10秒
+            ) as websocket:
+                subscribe_msg = {
+                    "command": "subscribe",
+                    "channel": "orderbooks",
+                    "symbol": "DOGE"
+                }
+                await websocket.send(json.dumps(subscribe_msg))
+                print("✅ Subscribed to DOGE orderbooks")
+                retry_count = 0  # 接続成功したらリトライカウントをリセット
 
-            if "bids" in data and "asks" in data:
-                latest_bid = float(data["bids"][0]["price"])
-                latest_ask = float(data["asks"][0]["price"])
+                while True:
+                    try:
+                        response = await websocket.recv()
+                        data = json.loads(response)
+
+                        if "bids" in data and "asks" in data:
+                            latest_bid = float(data["bids"][0]["price"])
+                            latest_ask = float(data["asks"][0]["price"])
+                    except websockets.exceptions.ConnectionClosed as e:
+                        print(f"⚠️ WebSocket接続が切断されました: {e}")
+                        break
+                    except Exception as e:
+                        print(f"⚠️ 予期せぬエラーが発生しました: {e}")
+                        continue
+
+        except Exception as e:
+            retry_count += 1
+            print(f"⚠️ 接続エラー ({retry_count}/{MAX_RETRIES}): {e}")
+            if retry_count < MAX_RETRIES:
+                print(f"⏳ {RETRY_DELAY}秒後に再接続を試みます...")
+                await asyncio.sleep(RETRY_DELAY)
+            else:
+                print("❌ 最大再接続回数に達しました。プログラムを終了します。")
+                raise
 
 async def main():
     await asyncio.gather(
