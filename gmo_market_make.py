@@ -12,7 +12,9 @@ current_sell_order_id = None
 last_buy_price = None
 last_sell_price = None
 last_order_time = 0
-ORDER_INTERVAL = 10  # 秒単位で待機時間
+
+ORDER_INTERVAL = 3  # 最小発注間隔（秒）
+SPREAD_THRESHOLD = 0.002  # 最小スプレッド（＝0.2%）
 
 async def order_loop():
     global current_buy_order_id, current_sell_order_id
@@ -23,8 +25,17 @@ async def order_loop():
             await asyncio.sleep(0.1)
             continue
 
-        maker_buy_price = round(latest_bid + 0.001, 3)   # 買い板よりちょっとだけ高く買う
-        maker_sell_price = round(latest_ask - 0.001, 3)  # 売り板よりちょっとだけ安く売る
+        # スプレッドが一定以上であることを確認
+        spread = latest_ask - latest_bid
+        spread_pct = spread / latest_bid
+
+        if spread_pct < SPREAD_THRESHOLD:
+            print(f"❌ スプレッドが狭い: {spread_pct:.4%} < {SPREAD_THRESHOLD*100:.1f}% → 発注スキップ")
+            await asyncio.sleep(1)
+            continue
+
+        maker_buy_price = round(latest_bid + 0.001, 3)
+        maker_sell_price = round(latest_ask - 0.001, 3)
 
         now = time.time()
         price_changed = (
@@ -34,9 +45,9 @@ async def order_loop():
         enough_time_passed = (now - last_order_time) >= ORDER_INTERVAL
 
         if price_changed and enough_time_passed:
-            print(f"📡 再発注 → Buy: {maker_buy_price}, Sell: {maker_sell_price}")
+            print(f"✅ 発注 → Spread: {spread_pct:.4%}, Buy: {maker_buy_price}, Sell: {maker_sell_price}")
 
-            cancel_all_positions("DOGE")  # 過去の注文を全キャンセル
+            cancel_all_positions("DOGE")
             current_buy_order_id = send_post_only_limit_order("DOGE", "BUY", 10, maker_buy_price)
             current_sell_order_id = send_post_only_limit_order("DOGE", "SELL", 10, maker_sell_price)
 
@@ -44,7 +55,7 @@ async def order_loop():
             last_sell_price = maker_sell_price
             last_order_time = now
         else:
-            await asyncio.sleep(0.5)  # 応答性を維持しつつCPUを休ませる
+            await asyncio.sleep(0.5)
 
 async def listen_to_orderbook():
     global latest_bid, latest_ask
@@ -61,7 +72,6 @@ async def listen_to_orderbook():
         while True:
             response = await websocket.recv()
             data = json.loads(response)
-            # print(data)
 
             if "bids" in data and "asks" in data:
                 latest_bid = float(data["bids"][0]["price"])
